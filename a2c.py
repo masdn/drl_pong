@@ -332,8 +332,10 @@ def run_from_config(config_path: str):
     """
     config_name = os.path.splitext(os.path.basename(config_path))[0]
 
+
     print(f"\n{'#' * 80}")
     print(f"# Processing config: {config_name}")
+    print(f"# Processing from device: {device}")
     print(f"{'#' * 80}\n")
 
     with open(config_path, "r") as f:
