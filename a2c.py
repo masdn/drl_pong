@@ -132,6 +132,8 @@ class A2CAgent:
 
         # Training hyperparameters
         self.gamma = config.get("gamma", 0.99)
+        # n-step horizon for returns/advantages; 0 or None = full-episode
+        self.n_step = config.get("n_step", 0)
         self.learning_rate = config.get("learning_rate", 2.5e-4)
         self.entropy_coef = config.get("entropy_coef", 0.01)
         self.value_loss_coef = config.get("value_loss_coef", 0.5)
@@ -202,7 +204,7 @@ class A2CAgent:
             entropy.squeeze(0),
         )
 
-    def compute_returns_and_advantages(self, rewards, values):
+    def compute_returns_and_advantages(self, rewards, values, dones):
         """
         Compute discounted returns and advantages for a single episode.
 
@@ -211,32 +213,60 @@ class A2CAgent:
         """
         T = len(rewards)
         returns = torch.zeros(T, dtype=torch.float32, device=device)
+        values_tensor = torch.stack(values).squeeze(-1)  # (T,)
 
-        R = 0.0
-        for t in reversed(range(T)):
-            R = rewards[t] + self.gamma * R
-            returns[t] = R
+        # If n_step <= 0, fall back to full-episode returns
+        if not self.n_step or self.n_step <= 0:
+            R = 0.0
+            for t in reversed(range(T)):
+                R = rewards[t] + self.gamma * R
+                returns[t] = R
+        else:
+            n = int(self.n_step)
+            for t in range(T):
+                R = 0.0
+                discount = 1.0
+                done_in_window = False
 
-        values_tensor = torch.stack(values)  # (T, 1) or (T,)
-        values_tensor = values_tensor.squeeze(-1)
+                # Accumulate up to n rewards or until a done is hit
+                for k in range(n):
+                    idx = t + k
+                    if idx >= T:
+                        break
+                    R += discount * rewards[idx]
+                    discount *= self.gamma
+                    if dones[idx]:
+                        done_in_window = True
+                        break
+
+                # Bootstrap from V(s_{t+n}) if the episode hasn't ended within the window
+                idx_bootstrap = t + n
+                if (not done_in_window) and (idx_bootstrap < T):
+                    R += discount * values_tensor[idx_bootstrap].detach()
+
+                returns[t] = R
 
         advantages = returns - values_tensor
         return returns, advantages
 
-    def update(self, log_probs, values, rewards, entropies):
+    def update(self, log_probs, values, rewards, entropies, dones):
         """
         Perform a single A2C update given one episode of experience.
         """
-        returns, advantages = self.compute_returns_and_advantages(rewards, values)
+        returns, advantages = self.compute_returns_and_advantages(rewards, values, dones)
 
         log_probs_tensor = torch.stack(log_probs)
         entropies_tensor = torch.stack(entropies)
 
-        # Normalize advantages for stability
+        # Keep a copy of the *raw* advantages for the value loss
+        raw_advantages = advantages
+
+        # Normalize advantages for stability (policy loss only)
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         policy_loss = -(log_probs_tensor * advantages.detach()).mean()
-        value_loss = advantages.pow(2).mean()
+        # Critic should learn on the true scale of (returns - values), not normalized
+        value_loss = raw_advantages.pow(2).mean()
         entropy_mean = entropies_tensor.mean()
 
         loss = (
@@ -281,6 +311,7 @@ class A2CAgent:
             values = []
             rewards = []
             entropies = []
+            dones = []
 
             episode_reward = 0.0
 
@@ -289,10 +320,13 @@ class A2CAgent:
 
                 next_state, reward, terminated, truncated, _ = env.step(action)
 
+                done = bool(terminated or truncated)
+
                 log_probs.append(log_prob)
                 values.append(value)
                 rewards.append(float(reward))
                 entropies.append(entropy)
+                dones.append(done)
 
                 episode_reward += float(reward)
                 state = next_state
@@ -300,7 +334,7 @@ class A2CAgent:
                 if render:
                     env.render()
 
-                if terminated or truncated:
+                if done:
                     break
 
             (
@@ -308,7 +342,7 @@ class A2CAgent:
                 policy_loss,
                 value_loss,
                 entropy_mean,
-            ) = self.update(log_probs, values, rewards, entropies)
+            ) = self.update(log_probs, values, rewards, entropies, dones)
 
             all_episode_rewards.append(episode_reward)
 
