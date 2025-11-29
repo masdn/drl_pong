@@ -5,6 +5,7 @@ import glob
 from datetime import datetime
 
 import numpy as np
+import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -46,6 +47,7 @@ def make_pong_env(
     def _thunk():
         env = gym.make(env_name, render_mode=render_mode)
         env.reset(seed=seed)
+        env.action_space.seed(seed)
 
         env = AtariPreprocessing(
             env,
@@ -344,6 +346,7 @@ def run_from_config(config_path: str):
     # Set random seeds for reproducibility
     seed = cfg.get("seed", 0)
     np.random.seed(seed)
+    random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
