@@ -20,7 +20,7 @@
     "scale_obs": true,
 
     "log_interval": 10,
-    "render_every": 500
+    "render_every": 5001
 }
 
 
