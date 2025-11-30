@@ -27,8 +27,11 @@ def compute_returns_and_advantages(rewards, values, dones, gamma: float, n_step:
     structurally similar to the A2C helper in `a2c.py`.
     """
     T = len(rewards)
-    returns = torch.zeros(T, dtype=torch.float32)
-    values_tensor = torch.stack(values).squeeze(-1)  # (T,)
+
+    # Make sure we stay on the same device as the value estimates (CPU or CUDA)
+    device_ = values[0].device
+    returns = torch.zeros(T, dtype=torch.float32, device=device_)
+    values_tensor = torch.stack(values).squeeze(-1).to(device_)  # (T,)
 
     if not n_step or n_step <= 0:
         R = 0.0
@@ -212,13 +215,20 @@ class A3CWorker(threading.Thread):
                     )
 
                     # Apply gradients to shared global model
+                    # 1) Clear global grads
                     self.optimizer.zero_grad()
+                    # 2) Clear local grads (otherwise they accumulate across updates)
+                    for p in self.local_model.parameters():
+                        if p.grad is not None:
+                            p.grad = None
+
+                    # 3) Backprop on local model and clip its gradients
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(
                         self.local_model.parameters(), self.max_grad_norm
                     )
 
-                    # Copy grads from local to global and step
+                    # 4) Copy grads from local to global and take an optimizer step
                     with self.counters.lock:
                         for global_param, local_param in zip(
                             self.global_model.parameters(),

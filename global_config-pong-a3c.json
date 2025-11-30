@@ -20,7 +20,7 @@
     "scale_obs": true,
 
     "t_max": 5,
-    "num_workers": 4,
+    "num_workers": 8,
 
     "log_interval": 50
 }
