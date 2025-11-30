@@ -398,6 +398,10 @@ def run_from_config(config_path: str):
     with open(config_path, "r") as f:
         cfg = json.load(f)
 
+    print("Loaded A2C config:")
+    print(json.dumps(cfg, indent=2))
+    print()
+
     # Set random seeds for reproducibility
     seed = cfg.get("seed", 0)
     np.random.seed(seed)
@@ -411,7 +415,7 @@ def run_from_config(config_path: str):
 
     print(f"\n{'=' * 60}")
     print(f"A2C Training on {cfg['env_name']}")
-    print(f"Config: {config_name}")
+    print(f"Config name: {config_name}")
     print(f"Episodes: {num_episodes}, Max Steps/Episode: {max_steps}")
     print(f"{'=' * 60}\n")
 
