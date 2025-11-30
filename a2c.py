@@ -172,7 +172,13 @@ class A2CAgent:
 
         fc_size = config.get("fc_size", 512)
         self.model = ActorCriticNet(obs_shape, num_actions, fc_size=fc_size).to(device)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
+        # Use RMSprop as in many classic Atari A2C implementations
+        self.optimizer = optim.RMSprop(
+            self.model.parameters(),
+            lr=self.learning_rate,
+            alpha=0.99,
+            eps=1e-5,
+        )
 
     def select_action(self, state):
         """
