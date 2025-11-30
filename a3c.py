@@ -190,9 +190,13 @@ def a3c_worker_process(
                 entropies_tensor = torch.stack(entropies)
 
                 raw_advantages = advantages.clone()
-                advantages = (advantages - advantages.mean()) / (
-                    advantages.std() + 1e-8
-                )
+                # Normalize advantages for stability, but guard against tiny batches / NaNs
+                adv_mean = advantages.mean()
+                if advantages.numel() > 1:
+                    adv_std = advantages.std(unbiased=False)
+                else:
+                    adv_std = torch.tensor(1.0, device=advantages.device)
+                advantages = (advantages - adv_mean) / (adv_std + 1e-8)
 
                 policy_loss = -(
                     log_probs_tensor * advantages.detach()
