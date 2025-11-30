@@ -292,9 +292,12 @@ class A2CAgent:
         """
         Train the A2C agent for a given number of episodes.
 
-        Returns a list of episode rewards.
+        Returns:
+            all_episode_rewards: list of per-episode returns.
+            total_steps: total environment steps collected across training.
         """
         all_episode_rewards: list[float] = []
+        total_steps: int = 0
 
         for episode in range(1, num_episodes + 1):
             # Choose whether to render this episode
@@ -314,6 +317,7 @@ class A2CAgent:
             dones = []
 
             episode_reward = 0.0
+            episode_steps = 0
 
             for step in range(max_steps_per_episode):
                 action, log_prob, value, entropy = self.select_action(state)
@@ -330,12 +334,15 @@ class A2CAgent:
 
                 episode_reward += float(reward)
                 state = next_state
+                episode_steps += 1
 
                 if render:
                     env.render()
 
                 if done:
                     break
+
+            total_steps += episode_steps
 
             (
                 total_loss,
@@ -359,7 +366,7 @@ class A2CAgent:
                     flush=True,
                 )
 
-        return all_episode_rewards
+        return all_episode_rewards, total_steps
 
 
 def run_from_config(config_path: str):
@@ -397,7 +404,9 @@ def run_from_config(config_path: str):
     agent = A2CAgent(cfg)
 
     start_time = time.time()
-    episode_rewards = agent.train(num_episodes=num_episodes, max_steps_per_episode=max_steps)
+    episode_rewards, total_steps = agent.train(
+        num_episodes=num_episodes, max_steps_per_episode=max_steps
+    )
     end_time = time.time()
     elapsed_time = end_time - start_time
 
@@ -419,11 +428,29 @@ def run_from_config(config_path: str):
     print(f"Max Reward: {max_reward:.2f}")
     print(f"Min Reward: {min_reward:.2f}")
 
+    # Common timestamp for results + checkpoints
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Save model checkpoint
+    checkpoints_dir = os.path.join(script_dir, "checkpoints")
+    os.makedirs(checkpoints_dir, exist_ok=True)
+
+    checkpoint = {
+        "model_state_dict": agent.model.state_dict(),
+        "optimizer_state_dict": agent.optimizer.state_dict(),
+        "episode": num_episodes,
+        "total_steps": int(total_steps),
+        "config": cfg,
+    }
+    checkpoint_path = os.path.join(
+        checkpoints_dir, f"a2c_{config_name}_{timestamp}.pt"
+    )
+    torch.save(checkpoint, checkpoint_path)
+    print(f"Checkpoint saved to: {checkpoint_path}")
+
     # Save results in a structure similar to your Lunar Lander scripts
     results_base_dir = os.path.join(script_dir, "results", config_name)
     os.makedirs(results_base_dir, exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     folder_name = f"a2c_avg_{average_reward:.2f}_{timestamp}"
     results_dir = os.path.join(results_base_dir, folder_name)
     os.makedirs(results_dir, exist_ok=True)
