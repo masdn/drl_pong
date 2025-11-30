@@ -267,8 +267,14 @@ class A2CAgent:
         # Keep a copy of the *raw* advantages for the value loss
         raw_advantages = advantages
 
-        # Normalize advantages for stability (policy loss only)
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        # Normalize advantages for stability (policy loss only), guarding against
+        # single-sample episodes where std() can become NaN.
+        adv_mean = advantages.mean()
+        if advantages.numel() > 1:
+            adv_std = advantages.std(unbiased=False)
+        else:
+            adv_std = torch.tensor(1.0, device=advantages.device)
+        advantages = (advantages - adv_mean) / (adv_std + 1e-8)
 
         policy_loss = -(log_probs_tensor * advantages.detach()).mean()
         # Critic should learn on the true scale of (returns - values), not normalized

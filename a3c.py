@@ -73,7 +73,7 @@ def a3c_worker_process(
     episode_counter: mp.Value,
     step_counter: mp.Value,
     update_lock: mp.Lock,
-    reward_queue: mp.Queue,
+    stats_queue: mp.Queue,
 ):
     """
     Multiprocessing A3C worker.
@@ -132,13 +132,14 @@ def a3c_worker_process(
         with episode_counter.get_lock():
             if episode_counter.value >= cfg["num_episodes"]:
                 break
-            episode_idx = episode_counter.value
+            episode_idx = episode_counter.value  # 0-based
             episode_counter.value += 1
 
         state, _ = env.reset()
         done = False
         episode_reward = 0.0
         steps_in_episode = 0
+        last_entropy_mean = 0.0
 
         while not done and steps_in_episode < max_steps_per_episode:
             log_probs = []
@@ -203,6 +204,7 @@ def a3c_worker_process(
                 ).mean()
                 value_loss = raw_advantages.pow(2).mean()
                 entropy_mean = entropies_tensor.mean()
+                last_entropy_mean = float(entropy_mean.item())
 
                 loss = (
                     policy_loss
@@ -219,6 +221,16 @@ def a3c_worker_process(
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(local_model.parameters(), max_grad_norm)
 
+                # Optional: occasional gradient norm debug from worker 0
+                if (episode_idx + 1) % 1000 == 0 and worker_id == 0:
+                    total_norm_sq = 0.0
+                    for p in local_model.parameters():
+                        if p.grad is not None:
+                            param_norm = p.grad.data.norm(2)
+                            total_norm_sq += param_norm.item() ** 2
+                    grad_norm = total_norm_sq ** 0.5
+                    print(f"[Debug] Worker {worker_id} grad_norm={grad_norm:.4f}", flush=True)
+
                 # Copy local grads to shared global model and step optimizer
                 with update_lock:
                     for global_param, local_param in zip(
@@ -233,17 +245,55 @@ def a3c_worker_process(
                     # Sync local parameters from updated global model
                     local_model.load_state_dict(global_model.state_dict())
 
-        # Push episode reward to parent
-        reward_queue.put(episode_reward)
+        # Push episode stats to parent (episode_idx is 0-based; +1 for human-readable)
+        stats_queue.put(
+            {
+                "ep": int(episode_idx + 1),
+                "worker": int(worker_id),
+                "reward": float(episode_reward),
+                "length": int(steps_in_episode),
+                "entropy": float(last_entropy_mean),
+            }
+        )
 
-        if episode_idx % cfg.get("log_interval", 10) == 0:
+    env.close()
+
+
+def stats_aggregator(num_episodes: int, stats_queue: mp.Queue, log_interval: int = 50):
+    """
+    Consume per-episode stats from all workers and print a clean global log.
+
+    Prints one line every `log_interval` global episodes with:
+    - last episode reward
+    - global Avg100 reward
+    - episode length
+    - last entropy value
+    """
+    rewards = []
+    last_stats = None
+
+    for global_ep in range(1, num_episodes + 1):
+        stats = stats_queue.get()
+        last_stats = stats
+        rewards.append(stats["reward"])
+
+        if global_ep % log_interval == 0:
+            if len(rewards) >= 100:
+                avg100 = float(np.mean(rewards[-100:]))
+            else:
+                avg100 = float(stats["reward"])
+
             print(
-                f"[Worker {worker_id}] Episode {episode_idx}/{cfg['num_episodes']} "
-                f"| Reward: {episode_reward:.2f}",
+                f"[Global Episode {global_ep}/{num_episodes}] "
+                f"Last: {stats['reward']:.2f} (W{stats['worker']}) | "
+                f"Avg100: {avg100:.2f} | "
+                f"Len: {stats['length']} | "
+                f"Entropy: {stats['entropy']:.3f}",
                 flush=True,
             )
 
-    env.close()
+    rewards_array = np.array(rewards, dtype=np.float32) if rewards else np.array([])
+    return rewards_array, last_stats
 
 
 def run_a3c_from_config(config_path: str):
@@ -287,7 +337,7 @@ def run_a3c_from_config(config_path: str):
     episode_counter = mp.Value("i", 0)
     step_counter = mp.Value("i", 0)
     update_lock = mp.Lock()
-    reward_queue = mp.Queue()
+    stats_queue = mp.Queue()
 
     print(
         f"Starting A3C with {num_workers} worker processes for "
@@ -305,26 +355,25 @@ def run_a3c_from_config(config_path: str):
                 episode_counter,
                 step_counter,
                 update_lock,
-                reward_queue,
+                stats_queue,
             ),
         )
         p.start()
         processes.append(p)
 
+    # Aggregate stats and print global logs while workers run
+    log_interval = cfg.get("log_interval", 50)
+    rewards_array, last_stats = stats_aggregator(
+        cfg["num_episodes"], stats_queue, log_interval=log_interval
+    )
+
     for p in processes:
         p.join()
 
-    # Collect rewards from the queue
-    rewards_list = []
-    num_episodes_done = episode_counter.value
-    for _ in range(num_episodes_done):
-        rewards_list.append(reward_queue.get())
-
-    rewards_array = np.array(rewards_list, dtype=np.float32) if rewards_list else np.array([])
-    average_reward = float(rewards_array.mean()) if rewards_list else 0.0
-    std_reward = float(rewards_array.std()) if rewards_list else 0.0
-    max_reward = float(rewards_array.max()) if rewards_list else 0.0
-    min_reward = float(rewards_array.min()) if rewards_list else 0.0
+    average_reward = float(rewards_array.mean()) if rewards_array.size > 0 else 0.0
+    std_reward = float(rewards_array.std()) if rewards_array.size > 0 else 0.0
+    max_reward = float(rewards_array.max()) if rewards_array.size > 0 else 0.0
+    min_reward = float(rewards_array.min()) if rewards_array.size > 0 else 0.0
 
     elapsed_time = 0.0  # could track with a timer if desired
 
@@ -334,7 +383,7 @@ def run_a3c_from_config(config_path: str):
     print(f"Std Reward: {std_reward:.2f}")
     print(f"Max Reward: {max_reward:.2f}")
     print(f"Min Reward: {min_reward:.2f}")
-    print(f"Total Episodes: {num_episodes_done}")
+    print(f"Total Episodes: {episode_counter.value}")
     print(f"Total Steps: {step_counter.value}")
     print(f"{'=' * 60}\n")
 
