@@ -5,7 +5,7 @@
     "num_episodes": 8000,
     "max_steps": 10000,
 
-    "learning_rate": 0.0007, 
+    "learning_rate": 0.0001, 
     "gamma": 0.99,
     "n_step": 5,
     "entropy_coef": 0.01,
