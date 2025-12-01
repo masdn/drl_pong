@@ -177,7 +177,7 @@ class A2CAgent:
             self.model.parameters(),
             lr=self.learning_rate,
             alpha=0.99,
-            eps=1e-5,
+            eps=0.1,
         )
 
     def select_action(self, state):
