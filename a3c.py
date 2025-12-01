@@ -187,6 +187,19 @@ def a3c_worker_process(
                     rewards, values, dones, gamma, n_step
                 )
 
+                # Occasional debug: log raw advantage stats from worker 0
+                if (episode_idx + 1) % 1000 == 0 and worker_id == 0:
+                    adv_mean_dbg = advantages.mean().item()
+                    if advantages.numel() > 1:
+                        adv_std_dbg = advantages.std(unbiased=False).item()
+                    else:
+                        adv_std_dbg = 0.0
+                    print(
+                        f\"[DebugAdv] ep {episode_idx + 1} | adv_mean={adv_mean_dbg:.3e} "
+                        f\"adv_std={adv_std_dbg:.3e}\",
+                        flush=True,
+                    )
+
                 log_probs_tensor = torch.stack(log_probs)
                 entropies_tensor = torch.stack(entropies)
 

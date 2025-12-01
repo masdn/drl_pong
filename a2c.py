@@ -330,61 +330,174 @@ class A2CAgent:
 
             state, _ = env.reset()
 
-            log_probs = []
-            values = []
-            rewards = []
-            entropies = []
-            dones = []
-
             episode_reward = 0.0
             episode_steps = 0
 
-            for step in range(max_steps_per_episode):
-                action, log_prob, value, entropy = self.select_action(state)
+            # --- n-step update mode ---
+            if self.n_step and self.n_step > 0:
+                while episode_steps < max_steps_per_episode:
+                    log_probs = []
+                    values = []
+                    rewards = []
+                    entropies = []
+                    dones = []
 
-                next_state, reward, terminated, truncated, _ = env.step(action)
+                    # Collect up to n_step transitions
+                    for _ in range(self.n_step):
+                        action, log_prob, value, entropy = self.select_action(state)
+                        next_state, reward, terminated, truncated, _ = env.step(action)
+                        done = bool(terminated or truncated)
 
-                done = bool(terminated or truncated)
+                        log_probs.append(log_prob)
+                        values.append(value)
+                        rewards.append(float(reward))
+                        entropies.append(entropy)
+                        dones.append(done)
 
-                log_probs.append(log_prob)
-                values.append(value)
-                rewards.append(float(reward))
-                entropies.append(entropy)
-                dones.append(done)
+                        episode_reward += float(reward)
+                        episode_steps += 1
+                        total_steps += 1
+                        state = next_state
 
-                episode_reward += float(reward)
-                state = next_state
-                episode_steps += 1
+                        if render:
+                            env.render()
 
-                if render:
-                    env.render()
+                        if done or episode_steps >= max_steps_per_episode:
+                            break
 
-                if done:
-                    break
+                    # Bootstrap value from next state (0 if terminal)
+                    with torch.no_grad():
+                        if done or episode_steps >= max_steps_per_episode:
+                            next_value = torch.zeros(1, device=device)
+                        else:
+                            state_arr = np.array(state, copy=False)
+                            state_tensor = (
+                                torch.from_numpy(state_arr)
+                                .float()
+                                .unsqueeze(0)
+                                .to(device)
+                            )
+                            _, v_next = self.model(state_tensor)
+                            next_value = v_next.squeeze(0)
 
-            total_steps += episode_steps
+                    # Compute n-step returns for this chunk
+                    R = next_value
+                    returns = []
+                    for r, d in zip(reversed(rewards), reversed(dones)):
+                        r_t = torch.tensor(r, dtype=torch.float32, device=device)
+                        mask = 0.0 if d else 1.0
+                        R = r_t + self.gamma * R * mask
+                        returns.insert(0, R)
 
-            (
-                total_loss,
-                policy_loss,
-                value_loss,
-                entropy_mean,
-            ) = self.update(log_probs, values, rewards, entropies, dones)
+                    returns_tensor = torch.stack(returns)
+                    values_tensor = torch.stack(values).squeeze(-1)
+                    advantages = returns_tensor - values_tensor
+
+                    # Use the same update logic as in self.update, but with our chunk
+                    log_probs_tensor = torch.stack(log_probs)
+                    entropies_tensor = torch.stack(entropies)
+
+                    raw_advantages = advantages
+                    adv_mean = advantages.mean()
+                    if advantages.numel() > 1:
+                        adv_std = advantages.std(unbiased=False)
+                    else:
+                        adv_std = torch.tensor(1.0, device=advantages.device)
+                    advantages = (advantages - adv_mean) / (adv_std + 1e-8)
+
+                    policy_loss = -(log_probs_tensor * advantages.detach()).mean()
+                    value_loss = raw_advantages.pow(2).mean()
+                    entropy_mean = entropies_tensor.mean()
+
+                    loss = (
+                        policy_loss
+                        + self.value_loss_coef * value_loss
+                        - self.entropy_coef * entropy_mean
+                    )
+
+                    # Debug: measure how much parameters change on this update
+                    with torch.no_grad():
+                        p_before = next(self.model.parameters()).clone()
+
+                    self.optimizer.zero_grad()
+                    loss.backward()
+                    if self.max_grad_norm is not None and self.max_grad_norm > 0:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(), self.max_grad_norm
+                        )
+                    self.optimizer.step()
+
+                    with torch.no_grad():
+                        diff = (
+                            next(self.model.parameters()) - p_before
+                        ).abs().mean().item()
+                    print("param_change:", diff)
+
+                    if done or episode_steps >= max_steps_per_episode:
+                        break
+
+            # --- full-episode (Monte Carlo) update mode ---
+            else:
+                log_probs = []
+                values = []
+                rewards = []
+                entropies = []
+                dones = []
+
+                for _ in range(max_steps_per_episode):
+                    action, log_prob, value, entropy = self.select_action(state)
+
+                    next_state, reward, terminated, truncated, _ = env.step(action)
+
+                    done = bool(terminated or truncated)
+
+                    log_probs.append(log_prob)
+                    values.append(value)
+                    rewards.append(float(reward))
+                    entropies.append(entropy)
+                    dones.append(done)
+
+                    episode_reward += float(reward)
+                    state = next_state
+                    episode_steps += 1
+                    total_steps += 1
+
+                    if render:
+                        env.render()
+
+                    if done:
+                        break
+
+                (
+                    total_loss,
+                    policy_loss,
+                    value_loss,
+                    entropy_mean,
+                ) = self.update(log_probs, values, rewards, entropies, dones)
 
             all_episode_rewards.append(episode_reward)
 
             if episode % self.log_interval == 0:
                 avg_reward = np.mean(all_episode_rewards[-50:])
-                print(
-                    f"Episode {episode}/{num_episodes} | "
-                    f"Reward: {episode_reward:.2f} | "
-                    f"Avg(50): {avg_reward:.2f} | "
-                    f"Loss: {total_loss:.4f} | "
-                    f"Policy: {policy_loss:.4f} | "
-                    f"Value: {value_loss:.4f} | "
-                    f"Entropy: {entropy_mean:.4f}",
-                    flush=True,
-                )
+                # In n-step mode, we don't have per-episode loss stats; print reward info.
+                if self.n_step and self.n_step > 0:
+                    print(
+                        f"Episode {episode}/{num_episodes} | "
+                        f"Reward: {episode_reward:.2f} | "
+                        f"Avg(50): {avg_reward:.2f}",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"Episode {episode}/{num_episodes} | "
+                        f"Reward: {episode_reward:.2f} | "
+                        f"Avg(50): {avg_reward:.2f} | "
+                        f"Loss: {total_loss:.4f} | "
+                        f"Policy: {policy_loss:.4f} | "
+                        f"Value: {value_loss:.4f} | "
+                        f"Entropy: {entropy_mean:.4f}",
+                        flush=True,
+                    )
 
         return all_episode_rewards, total_steps
 
