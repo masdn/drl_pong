@@ -287,19 +287,11 @@ class A2CAgent:
             - self.entropy_coef * entropy_mean
         )
 
-        # Debug: measure how much parameters change on this update
-        with torch.no_grad():
-            p_before = next(self.model.parameters()).clone()
-
         self.optimizer.zero_grad()
         loss.backward()
         if self.max_grad_norm is not None and self.max_grad_norm > 0:
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
         self.optimizer.step()
-
-        with torch.no_grad():
-            diff = (next(self.model.parameters()) - p_before).abs().mean().item()
-        print("param_change:", diff)
 
         return (
             loss.item(),
@@ -415,10 +407,6 @@ class A2CAgent:
                         - self.entropy_coef * entropy_mean
                     )
 
-                    # Debug: measure how much parameters change on this update
-                    with torch.no_grad():
-                        p_before = next(self.model.parameters()).clone()
-
                     self.optimizer.zero_grad()
                     loss.backward()
                     if self.max_grad_norm is not None and self.max_grad_norm > 0:
@@ -426,12 +414,6 @@ class A2CAgent:
                             self.model.parameters(), self.max_grad_norm
                         )
                     self.optimizer.step()
-
-                    with torch.no_grad():
-                        diff = (
-                            next(self.model.parameters()) - p_before
-                        ).abs().mean().item()
-                    print("param_change:", diff)
 
                     if done or episode_steps >= max_steps_per_episode:
                         break

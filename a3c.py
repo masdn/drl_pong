@@ -195,8 +195,8 @@ def a3c_worker_process(
                     else:
                         adv_std_dbg = 0.0
                     print(
-                        f\"[DebugAdv] ep {episode_idx + 1} | adv_mean={adv_mean_dbg:.3e} "
-                        f\"adv_std={adv_std_dbg:.3e}\",
+                        f"[DebugAdv] ep {episode_idx + 1} | adv_mean={adv_mean_dbg:.3e} "
+                        f"adv_std={adv_std_dbg:.3e}",
                         flush=True,
                     )
 
