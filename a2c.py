@@ -267,11 +267,12 @@ class A2CAgent:
         # Keep a copy of the *raw* advantages for the value loss
         raw_advantages = advantages
 
-        # Normalize advantages for stability (policy loss only), guarding against
-        # single-sample episodes where std() can become NaN.
+        # Normalize advantages for stability (policy loss only), but clamp the
+        # std so tiny batches don't explode the scale of the gradient.
         adv_mean = advantages.mean()
         if advantages.numel() > 1:
             adv_std = advantages.std(unbiased=False)
+            adv_std = torch.clamp(adv_std, min=0.1)
         else:
             adv_std = torch.tensor(1.0, device=advantages.device)
         advantages = (advantages - adv_mean) / (adv_std + 1e-8)
@@ -394,6 +395,7 @@ class A2CAgent:
                     adv_mean = advantages.mean()
                     if advantages.numel() > 1:
                         adv_std = advantages.std(unbiased=False)
+                        adv_std = torch.clamp(adv_std, min=0.1)
                     else:
                         adv_std = torch.tensor(1.0, device=advantages.device)
                     advantages = (advantages - adv_mean) / (adv_std + 1e-8)
