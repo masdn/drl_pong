@@ -327,6 +327,7 @@ class A2CAgent:
 
             # --- n-step update mode ---
             if self.n_step and self.n_step > 0:
+                last_entropy_mean = 0.0
                 while episode_steps < max_steps_per_episode:
                     log_probs = []
                     values = []
@@ -400,6 +401,7 @@ class A2CAgent:
                     policy_loss = -(log_probs_tensor * advantages.detach()).mean()
                     value_loss = raw_advantages.pow(2).mean()
                     entropy_mean = entropies_tensor.mean()
+                    last_entropy_mean = float(entropy_mean.item())
 
                     loss = (
                         policy_loss
@@ -466,7 +468,8 @@ class A2CAgent:
                     print(
                         f"Episode {episode}/{num_episodes} | "
                         f"Reward: {episode_reward:.2f} | "
-                        f"Avg(50): {avg_reward:.2f}",
+                        f"Avg(50): {avg_reward:.2f} | "
+                        f"Entropy: {last_entropy_mean:.4f}",
                         flush=True,
                     )
                 else:
