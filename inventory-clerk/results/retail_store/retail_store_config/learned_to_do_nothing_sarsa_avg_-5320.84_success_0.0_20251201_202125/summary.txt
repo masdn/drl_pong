@@ -1,0 +1,25 @@
+Retail Store SARSA Training Summary
+============================================================
+
+Algorithm: SARSA (Tabular)
+Config: retail_store_config
+Environment: RetailStore-v0
+Episodes: 1000
+Max Steps: 200
+Training Time: 505.53 seconds (8.43 minutes)
+
+Results:
+  Average Reward: -5320.84
+  Std Reward: 3305.67
+  Max Reward: 31.00
+  Min Reward: -18441.00
+  Success Rate: 0.00%
+  Successful Episodes: 0/1000
+
+Hyperparameters:
+  Learning Rate: 0.05
+  Gamma: 0.99
+  Initial Epsilon: 1.0
+  Min Epsilon: 0.01
+  Decay Rate: 0.005
+  Use Boltzmann: False

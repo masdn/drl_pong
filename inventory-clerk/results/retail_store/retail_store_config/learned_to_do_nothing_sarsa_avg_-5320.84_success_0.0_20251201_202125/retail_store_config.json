@@ -3,14 +3,13 @@
   "num_episodes": 1000,
   "max_steps": 200,
   "gamma": 0.99,
-  "learning_rate": 0.1,
+  "learning_rate": 0.05,
   "initial_epsilon": 1.0,
   "min_epsilon": 0.01,
   "decay_rate": 0.005,
   "use_boltzmann": false,
-  "display_episodes": 1001,
-  "seed": 42,
-  "_comment": "Example configuration for Retail Store environment. Copy and modify to create custom configs."
+  "display_episodes": 100,
+  "seed": 42
 }
 
 

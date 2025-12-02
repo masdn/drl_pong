@@ -1,0 +1,26 @@
+A2C Training Summary
+============================================================
+
+Algorithm: A2C (Advantage Actor-Critic)
+Config: global_config-pong-a2c
+Environment: ALE/Pong-v5
+Episodes: 100
+Max Steps per Episode: 10000
+Training Time: 194.48 seconds (3.24 minutes)
+
+Average Reward: -20.37
+Std Reward: 0.74
+Max Reward: -18.00
+Min Reward: -21.00
+
+Key Hyperparameters:
+  Learning Rate: 0.0007
+  Gamma: 0.99
+  Entropy Coef: 0.01
+  Value Loss Coef: 0.5
+  Max Grad Norm: 0.5
+  FC Size: 512
+  Frame Skip: 1
+  Frame Stack: 4
+  Grayscale: True
+  Scale Obs: True

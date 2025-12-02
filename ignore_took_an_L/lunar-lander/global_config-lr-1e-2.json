@@ -1,0 +1,17 @@
+{
+    "seed": 0,
+    "env_name": "LunarLander-v3",
+    "display": false,
+    "display_episodes":3001,
+    "num_episodes": 3000,
+    "max_steps": 200,
+    "hidden_layers": [128,128,128],
+    "activation_function": "relu",
+    "learning_rate": 0.01,
+    "gamma": 0.99,
+    "initial_epsilon": 1.0,
+    "min_epsilon": 0.01,
+    "decay_rate": 0.01,
+    "use_baseline": true,
+    "use_boltzmann": false
+}

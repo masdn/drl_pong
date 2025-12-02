@@ -1,0 +1,44 @@
+{
+  "items": {
+    "canvas": {
+      "department": 0,
+      "image": "../images/canvas.png",
+      "color": "#ADD8E6"
+    },
+    "brush": {
+      "department": 3,
+      "image": "../images/brush.png",
+      "color": "#FFDAB9"
+    },
+    "paper": {
+      "department": 1,
+      "image": "../images/paper.png",
+      "color": "#87CEFA"
+    },
+    "easel": {
+      "department": 2,
+      "image": "../images/easel.png",
+      "color": "#90EE90"
+    },
+    "palette": {
+      "department": 4,
+      "image": "../images/palette.png",
+      "color": "#FFFF99"
+    },
+    "paint_tube": {
+      "department": 5,
+      "image": "../images/paint_tube.png",
+      "color": "#FFB6C1"
+    },
+    "spray_paint": {
+      "department": 6,
+      "image": "../images/spray_paint.png",
+      "color": "#DDA0DD"
+    },
+    "frames": {
+      "department": 7,
+      "image": "../images/frames.png",
+      "color": "#FFC0CB"
+    }
+  }
+}

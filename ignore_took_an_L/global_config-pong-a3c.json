@@ -1,0 +1,28 @@
+{
+    "seed": 0,
+    "env_name": "PongNoFrameskip-v4",
+
+    "num_episodes": 10000,
+    "max_steps": 10000,
+
+    "learning_rate": 0.00007,
+    "gamma": 0.99,
+    "n_step": 5,
+    "entropy_coef": 0.005,
+    "value_loss_coef": 0.5,
+    "max_grad_norm": 0.5,
+
+    "fc_size": 512,
+
+    "frame_skip": 4,
+    "frame_stack": 4,
+    "grayscale": true,
+    "scale_obs": true,
+
+    "t_max": 5,
+    "num_workers": 8,
+
+    "log_interval": 50
+}
+
+

@@ -24,15 +24,19 @@ def demo_random_agent(num_episodes: int = 5, render: bool = True):
     print("=" * 60)
     print(f"Grid Size: {env.unwrapped.grid_size}x{env.unwrapped.grid_size}")
     print(f"Number of Items: {env.unwrapped.num_items}")
-    print(f"Back Office Location: {env.unwrapped.office_location}")
+    # In the updated environment, the clerk starts at a movable stocking cart
+    # instead of a fixed back office location.
+    print(f"Stocking Cart Start Location: {env.unwrapped.cart_start}")
     print(f"Action Space: {env.action_space}")
     print(f"Observation Space: {env.observation_space}")
     print("=" * 60)
     print("\nItem Locations:")
-    item_names = [
-        "Dairy", "Frozen Foods", "Produce", "Bakery",
-        "Canned Goods", "Beverages", "Cleaning Supplies", "Personal Care"
-    ]
+    # Pull human-readable item names from the environment, which now loads
+    # configuration from inventory/items.json.
+    item_names = getattr(env.unwrapped, "item_names", None)
+    if not item_names:
+        # Fallback in case the environment does not expose names for some reason.
+        item_names = [f"Item {i}" for i in range(env.unwrapped.num_items)]
     for item_id, location in env.unwrapped.item_locations.items():
         print(f"  Item {item_id} ({item_names[item_id]}): {location}")
     print("=" * 60)
@@ -41,8 +45,10 @@ def demo_random_agent(num_episodes: int = 5, render: bool = True):
     print("  1: Move North (up)")
     print("  2: Move East (right)")
     print("  3: Move West (left)")
-    print("  4: Pickup box")
+    print("  4: Pickup box (at cart)")
     print("  5: Dropoff item")
+    print("  6: Start pushing cart (when adjacent)")
+    print("  7: Leave cart (stop pushing)")
     print("=" * 60)
     print("\nReward Structure:")
     print("  +1000: Exact correct location")
@@ -74,12 +80,24 @@ def demo_random_agent(num_episodes: int = 5, render: bool = True):
             episode_reward += reward
             steps += 1
             
-            action_names = ["South", "North", "East", "West", "Pickup", "Dropoff"]
+            action_names = [
+                "South",
+                "North",
+                "East",
+                "West",
+                "Pickup",
+                "Dropoff",
+                "Start pushing cart",
+                "Leave cart",
+            ]
             
             if reward != -1:  # Only print non-step rewards
-                print(f"Step {steps}: Action={action_names[action]}, "
-                      f"Pos={info['agent_pos']}, Reward={reward:.1f}, "
-                      f"Distance={info['distance_to_target']}")
+                action_name = action_names[action] if action < len(action_names) else f"Action {action}"
+                print(
+                    f"Step {steps}: Action={action_name}, "
+                    f"Pos={info['agent_pos']}, Reward={reward:.1f}, "
+                    f"Distance={info['distance_to_target']}"
+                )
             
             if render and not done:
                 time.sleep(0.1)  # Slow down for visualization

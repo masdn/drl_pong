@@ -31,6 +31,7 @@ Rewards:
   -10:   Within 8 blocks of correct location
   -500:  More than 8 blocks away
   -1:    Each step (encourages efficiency)
+  -800:  Additional penalty when adjacent to a customer NPC (collision risk)
 ```
 
 ### 2. Demo Script (`demo_retail_store.py`)
