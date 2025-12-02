@@ -10,7 +10,7 @@ import numpy as np
 import pygame
 import os
 import json
-from typing import Optional, Tuple, Dict, List
+from typing import Optional, Tuple, Dict, List, Set
 
 
 class RetailStoreEnv(gym.Env):
@@ -61,27 +61,74 @@ class RetailStoreEnv(gym.Env):
         self.render_mode = render_mode
         self.enable_customers = enable_customers
 
-        # Load item and department configuration from JSON files
+        # Load item configuration from JSON
         script_dir = os.path.dirname(os.path.abspath(__file__))
         inventory_dir = os.path.join(script_dir, "inventory")
         items_path = os.path.join(inventory_dir, "items.json")
-        departments_path = os.path.join(inventory_dir, "departments.json")
 
         self.items_config: Dict[str, dict] = self._load_json(items_path, root_key="items")
-        self.departments_config: Dict[str, dict] = self._load_json(
-            departments_path, root_key="departments"
-        )
 
         # Stable ordering of items: use the order from items.json
         self.item_names: List[str] = list(self.items_config.keys())
 
-        # Map department id -> (row, col)
-        dept_locations: Dict[int, Tuple[int, int]] = {
-            int(dept_id): (int(spec["row"]), int(spec["col"]))
-            for dept_id, spec in self.departments_config.items()
-        }
+        # ------------------------------------------------------------------
+        # Grid layout (20x20) encoding departments and static obstacles.
+        # Each cell is:
+        #   '.' : empty walkable cell
+        #   '*' : obstacle (blocked for agent, cart, and customers)
+        #   '0'-'9' : department ID for an item location
+        # ------------------------------------------------------------------
+        self.grid_layout: List[List[str]] = [
+            list("*..............*****"),  # row 0
+            list("0..................."),  # row 1
+            list("*..................."),  # row 2: dept 0 and 1
+            list("........**..**.....*"),  # row 3
+            list("...*....5....*.....*"),  # row 4: dept 5
+            list("...*............*..6"),  # row 5
+            list("...2............*..*"),  # row 6: dept 2 and 3
+            list("...*....*....*......"),  # row 7
+            list("...*....**..*3......"),  # row 8
+            list("...................."),  # row 9
+            list("...................."),  # row 10: dept 4
+            list("........*4..**......"),  # row 11
+            list("..***...*....*......"),  # row 12
+            list("...................."),  # row 13
+            list("..***............7.."),  # row 14: dept 6 and 7
+            list("........*....*......"),  # row 15
+            list("........**..**......"),  # row 16
+            list("*..................."),  # row 17
+            list("*..................."),  # row 18
+            list("*1*................."),  # row 19
+        ]
 
-        # Build item -> department, locations, and colors from JSON
+        # Obstacles: initialize from layout and then add special ones around
+        # department 1 (one cell two left, one cell directly below).
+        self.obstacles: Set[Tuple[int, int]] = set()
+        dept_locations: Dict[int, Tuple[int, int]] = {}
+
+        for r in range(self.grid_size):
+            for c in range(self.grid_size):
+                cell = self.grid_layout[r][c]
+                if cell == "*":
+                    self.obstacles.add((r, c))
+                elif cell.isdigit():
+                    dept_id = int(cell)
+                    dept_locations[dept_id] = (r, c)
+
+        # Ensure department 1 exists before placing related obstacles
+        dept1_pos: Optional[Tuple[int, int]] = dept_locations.get(1)
+        if dept1_pos is not None:
+            r, c = dept1_pos
+            # One cell two steps to the left of department 1
+            left_col = c - 2
+            if 0 <= left_col < self.grid_size:
+                self.obstacles.add((r, left_col))
+            # One cell directly below department 1
+            below_row = r + 1
+            if 0 <= below_row < self.grid_size:
+                self.obstacles.add((below_row, c))
+
+        # Build item -> department, locations, and colors using the layout
         self.item_departments: List[int] = []
         self.item_locations: Dict[int, Tuple[int, int]] = {}
         self.item_colors: List[Tuple[int, int, int]] = []
@@ -261,7 +308,7 @@ class RetailStoreEnv(gym.Env):
             while True:
                 row = int(self.np_random.integers(0, self.grid_size))
                 col = int(self.np_random.integers(0, self.grid_size))
-                if (row, col) != self.cart_start:
+                if (row, col) != self.cart_start and (row, col) not in self.obstacles:
                     self.customer_positions.append((row, col))
                     break
         # Reset previous directions when customers are (re)spawned
@@ -300,7 +347,11 @@ class RetailStoreEnv(gym.Env):
                 dr, dc = directions[d_idx]
 
             nr, nc = row + dr, col + dc
-            if 0 <= nr < self.grid_size and 0 <= nc < self.grid_size:
+            if (
+                0 <= nr < self.grid_size
+                and 0 <= nc < self.grid_size
+                and (nr, nc) not in self.obstacles
+            ):
                 new_positions.append((nr, nc))
                 new_dirs.append((dr, dc))
             else:
@@ -352,7 +403,7 @@ class RetailStoreEnv(gym.Env):
     def step(self, action: int):
         """Execute one step in the environment."""
         self.steps += 1
-        reward = -1  # Small negative reward for each step
+        reward = -8  # Small negative reward for each step
         terminated = False
         # Record last action for rendering/debugging
         self.last_action = action
@@ -379,19 +430,23 @@ class RetailStoreEnv(gym.Env):
             new_row = self.agent_pos[0] + direction[0]
             new_col = self.agent_pos[1] + direction[1]
             
-            # Check boundaries
+            # Check boundaries and obstacles
             if 0 <= new_row < self.grid_size and 0 <= new_col < self.grid_size:
-                # If pushing the cart, treat item goal cells as blocked so the
-                # cart can never sit on a shelf location.
-                if self.pushing_cart and (new_row, new_col) in self.item_locations.values():
-                    # Block the move and apply a small penalty for trying to
-                    # push the cart onto a shelf.
-                    reward -= 20
+                if (new_row, new_col) in self.obstacles:
+                    # Ran into a static obstacle (e.g., shelving) – stronger penalty.
+                    reward -= 10
                 else:
-                    self.agent_pos = (new_row, new_col)
-                    # If pushing the cart, it follows the agent
-                    if self.pushing_cart:
-                        self.cart_pos = self.agent_pos
+                    # If pushing the cart, treat item goal cells as blocked so the
+                    # cart can never sit on a shelf location.
+                    if self.pushing_cart and (new_row, new_col) in self.item_locations.values():
+                        # Block the move and apply a small penalty for trying to
+                        # push the cart onto a shelf.
+                        reward -= 10
+                    else:
+                        self.agent_pos = (new_row, new_col)
+                        # If pushing the cart, it follows the agent
+                        if self.pushing_cart:
+                            self.cart_pos = self.agent_pos
             else:
                 # Invalid attempt (off-grid); small penalty
                 reward -= 20
@@ -479,10 +534,10 @@ class RetailStoreEnv(gym.Env):
                 else:
                     # Invalid attempt; softer penalty so exploration of action 6
                     # is not overly discouraged.
-                    reward -= 10
+                    reward -= 20
             else:
                 # Already pushing; no-op with small penalty
-                reward -= 5
+                reward -= 10
 
         elif action == 7:
             # Action 7: Leave the cart; it stays where it is
@@ -533,7 +588,7 @@ class RetailStoreEnv(gym.Env):
         if min_cust_dist is not None and not self.pushing_cart: #TODO: Remove this condition for test
             if min_cust_dist <= 1:
                 # Strong (but softened) penalty for being on or right next to a customer
-                reward -= 80
+                reward -= 70
                 # Teleport agent back to the cart (wherever it currently is)
                 self.agent_pos = self.cart_pos
                 # No longer pushing the cart after being interrupted
@@ -544,7 +599,7 @@ class RetailStoreEnv(gym.Env):
                 # Mild penalty when within 4 blocks of any customer.
                 # This nudges the agent away from busy areas without making
                 # exploration prohibitively expensive.
-                reward -= 20
+                reward -= 30
 
         # Check if max steps reached
         if self.steps >= self.max_steps:
@@ -647,6 +702,19 @@ class RetailStoreEnv(gym.Env):
                     )
                 )
                 canvas.blit(text, text_rect)
+
+        # Draw static obstacles as solid black cells
+        for (row, col) in self.obstacles:
+            pygame.draw.rect(
+                canvas,
+                (0, 0, 0),
+                pygame.Rect(
+                    col * self.cell_size,
+                    row * self.cell_size,
+                    self.cell_size,
+                    self.cell_size,
+                ),
+            )
         
         # Ensure item images are loaded once (used for carried and dropped items)
         if not self.item_images:

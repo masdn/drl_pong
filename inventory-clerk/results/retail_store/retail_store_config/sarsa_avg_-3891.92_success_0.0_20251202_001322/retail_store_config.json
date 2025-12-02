@@ -8,8 +8,8 @@
   "min_epsilon": 0.01,
   "decay_rate": 0.0001,
   "use_boltzmann": false,
-  "display_episodes": 54000,
-  "enable_customers": false,
+  "display_episodes": 30000,
+  "enable_customers": true,
   "seed": 42
 }
 

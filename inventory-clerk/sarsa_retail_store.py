@@ -169,7 +169,7 @@ if __name__ == "__main__":
     default_config = {
         "env_name": "RetailStore-v0",
         "num_episodes": 1000,
-        "max_steps": 200,
+        "max_steps": 600,
         "gamma": 0.99,
         "learning_rate": 0.1,
         "initial_epsilon": 1.0,
