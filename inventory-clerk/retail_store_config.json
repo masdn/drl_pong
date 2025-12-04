@@ -6,10 +6,10 @@
   "learning_rate": 0.1,
   "initial_epsilon": 1.0,
   "min_epsilon": 0.01,
-  "decay_rate": 0.00005,
+  "decay_rate": 0.00003,
   "use_boltzmann": false,
-  "display_episodes": 1000000000,
-  "enable_customers": false,
+  "display_episodes": 50000,
+  "enable_customers": true,
   "seed": 42
 }
 
