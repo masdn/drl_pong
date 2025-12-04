@@ -1,14 +1,14 @@
 {
   "env_name": "RetailStore-v0",
-  "num_episodes": 110000,
+  "num_episodes": 200000,
   "max_steps": 400,
   "gamma": 0.99,
-  "learning_rate": 0.05,
+  "learning_rate": 0.1,
   "initial_epsilon": 1.0,
   "min_epsilon": 0.01,
-  "decay_rate": 0.0001,
+  "decay_rate": 0.00005,
   "use_boltzmann": false,
-  "display_episodes": 54000,
+  "display_episodes": 1000000000,
   "enable_customers": false,
   "seed": 42
 }

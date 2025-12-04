@@ -88,12 +88,12 @@ class RetailStoreEnv(gym.Env):
             list("...2............*..*"),  # row 6: dept 2 and 3
             list("...*....*....*......"),  # row 7
             list("...*....**..*3......"),  # row 8
-            list("...................."),  # row 9
-            list("...................."),  # row 10: dept 4
+            list("*..................."),  # row 9
+            list("*..................."),  # row 10: dept 4
             list("........*4..**......"),  # row 11
-            list("..***...*....*......"),  # row 12
+            list("..***...*....*...***"),  # row 12
             list("...................."),  # row 13
-            list("..***............7.."),  # row 14: dept 6 and 7
+            list("..***............*7*"),  # row 14: dept 6 and 7
             list("........*....*......"),  # row 15
             list("........**..**......"),  # row 16
             list("*..................."),  # row 17
@@ -157,7 +157,7 @@ class RetailStoreEnv(gym.Env):
 
         # Customers (NPCs) randomly moving around the store.
         # These are additional dynamic obstacles the clerk should avoid.
-        self.num_customers = 8 if self.enable_customers else 0
+        self.num_customers = 6 if self.enable_customers else 0
         self.customer_positions = []  # List[Tuple[int, int]]
         # Customer movement parameters: move only occasionally and with some inertia
         # so their paths are less jittery and more realistic.
@@ -167,12 +167,26 @@ class RetailStoreEnv(gym.Env):
         # Action space: 8 discrete actions (4 moves + pickup + dropoff + cart controls)
         self.action_space = spaces.Discrete(8)
         
-        # Observation space: encode position, item type, and has_item status
-        # State encoding: row * grid_size * (num_items + 1) + col * (num_items + 1) + item_encoding
-        # where item_encoding is: item_id if has_item else num_items
-        self.observation_space = spaces.Discrete(
-            grid_size * grid_size * (self.num_items + 1)
+        # Observation space:
+        # We expose a structured Dict observation so agents can directly see
+        # whether they are pushing the cart, in addition to their position and
+        # which item encoding they currently have.
+        #
+        #   - agent_row, agent_col: agent position on the grid
+        #   - item: item_encoding (item_id if has_item else num_items)
+        #   - pushing_cart: 1 if pushing, 0 otherwise
+        self.observation_space = spaces.Dict(
+            {
+                "agent_row": spaces.Discrete(grid_size),
+                "agent_col": spaces.Discrete(grid_size),
+                "item": spaces.Discrete(self.num_items + 1),
+                "pushing_cart": spaces.Discrete(2),
+            }
         )
+        # Internal discrete state index size used by tabular / embedding-based
+        # agents. This extends the original encoding by a factor of 2 to account
+        # for the pushing_cart flag.
+        self.state_index_size = grid_size * grid_size * (self.num_items + 1) * 2
         
         # Movement actions
         self.action_to_direction = {
@@ -221,11 +235,39 @@ class RetailStoreEnv(gym.Env):
         # Track last action taken for rendering a simple "chat box"
         self.last_action: Optional[int] = None
         
-    def _get_obs(self) -> int:
-        """Encode the current state as an integer observation."""
+    def _encode_state_index(self) -> int:
+        """
+        Encode the current environment state into a single integer index.
+        This is used internally by tabular / embedding-based agents.
+        """
         row, col = self.agent_pos
         item_encoding = self.current_item if self.has_item else self.num_items
-        return row * self.grid_size * (self.num_items + 1) + col * (self.num_items + 1) + item_encoding
+        base_index = (
+            row * self.grid_size * (self.num_items + 1)
+            + col * (self.num_items + 1)
+            + item_encoding
+        )
+        pushing_bit = 1 if self.pushing_cart else 0
+        return base_index * 2 + pushing_bit
+    
+    def _get_obs(self) -> Dict[str, int]:
+        """
+        Return the current observation as a structured Dict.
+        
+        Keys:
+            - agent_row (int)
+            - agent_col (int)
+            - item (int): item_id if carrying an item, else num_items sentinel
+            - pushing_cart (int): 1 if pushing the cart, 0 otherwise
+        """
+        row, col = self.agent_pos
+        item_encoding = self.current_item if self.has_item else self.num_items
+        return {
+            "agent_row": int(row),
+            "agent_col": int(col),
+            "item": int(item_encoding),
+            "pushing_cart": int(self.pushing_cart),
+        }
     
     def _get_info(self) -> dict:
         """Return auxiliary information."""
@@ -254,6 +296,11 @@ class RetailStoreEnv(gym.Env):
             "customer_positions": list(self.customer_positions),
             "nearby_customers": nearby_customers,
             "min_customer_distance": min_customer_distance,
+            "all_items_stocked": all(self.items_stocked),
+            # Expose the compact integer state index so existing tabular /
+            # discrete-state agents can continue to work even though the
+            # observation_space is now a Dict.
+            "state_index": self._encode_state_index(),
         }
     
     def _manhattan_distance(self, pos1: Tuple[int, int], pos2: Tuple[int, int]) -> int:
@@ -403,9 +450,10 @@ class RetailStoreEnv(gym.Env):
     def step(self, action: int):
         """Execute one step in the environment."""
         self.steps += 1
-        reward = -8  # Small negative reward for each step
+        # Small negative reward for each step to encourage efficiency, but
+        # not so large that exploration becomes overwhelmingly bad.
+        reward = -3
         terminated = False
-        # Record last action for rendering/debugging
         self.last_action = action
         # Distance to cart before taking the action (for shaping when empty-handed)
         prev_dist_to_cart = self._manhattan_distance(self.agent_pos, self.cart_pos)
@@ -508,12 +556,15 @@ class RetailStoreEnv(gym.Env):
                     # the item's true shelf location. This makes it more desirable
                     # to move the cart toward the department before dropping.
                     cart_dist = self._manhattan_distance(self.cart_pos, target_location)
-                    cart_penalty_per_step = 5.0
+                    cart_penalty_per_step = 1.0
                     reward -= cart_penalty_per_step * cart_dist
 
                     # If every item type has been perfectly stocked at least once
-                    # during this episode, end the episode.
+                    # during this episode, give an additional completion bonus
+                    # and end the episode.
                     if all(self.items_stocked):
+                        completion_bonus = 2000.0
+                        reward += completion_bonus
                         terminated = True
 
                     # After any drop, the clerk no longer has the item and must
@@ -548,24 +599,25 @@ class RetailStoreEnv(gym.Env):
                 # Already not pushing; no-op with small penalty
                 reward -= 50
 
-        # Distance-based shaping and strong penalty when moving without an item.
-        # Being empty-handed is treated as worse than dropping an item in the
-        # wrong spot, so every movement step without an item incurs a large
-        # negative reward, with a small shaping bonus when moving closer to the cart.
+        # Distance-based shaping and penalty when moving without an item.
+        # Being empty-handed is still treated as undesirable, but the per-step
+        # penalty is softened so that returning to the cart is not suicidal.
         if action < 4 and not self.has_item:
             new_dist_to_cart = self._manhattan_distance(self.agent_pos, self.cart_pos)
             alpha = 2.0  # Shaping: prefer moves that reduce distance to cart
             reward += alpha * (prev_dist_to_cart - new_dist_to_cart)
-            # Strong per-step penalty for being empty-handed
-            reward -= 30
+            # Moderate per-step penalty for being empty-handed
+            reward -= 10
 
-        # Distance-based shaping when pushing the cart: reward movement that
-        # brings the cart closer to the current item's target location.
+        # When pushing the cart, we do not provide any extra positive shaping
+        # beyond what the agent would receive by walking without the cart.
+        # This keeps "riding in the cart" from being inherently more rewarding
+        # than simply moving around on foot.
         if action < 4 and self.pushing_cart:
             new_cart_to_target = self._manhattan_distance(
                 self.cart_pos, self.item_locations[self.current_item]
             )
-            alpha_cart = 10.0
+            alpha_cart = 0.0
             reward += alpha_cart * (prev_cart_to_target - new_cart_to_target)
         
         # Move customers randomly after the agent acts

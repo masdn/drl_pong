@@ -69,21 +69,46 @@ def run_trained_agent(run_dir: str, num_episodes: int = 5, sleep: float = 0.1):
         raise FileNotFoundError(f"q_table.npy not found in {run_dir}")
 
     q_table = np.load(q_table_path)
-
+    
     cfg = load_config_for_run(run_dir)
     env_name = cfg.get("env_name", "RetailStore-v0")
     max_steps = cfg.get("max_steps", 200)
     enable_customers = cfg.get("enable_customers", True)
-
+    
     print(f"Using run directory: {run_dir}")
     print(f"Loaded Q-table shape: {q_table.shape}")
     print(f"Environment: {env_name}, max_steps: {max_steps}, enable_customers={enable_customers}")
-
+    
     env = gym.make(env_name, render_mode="human", enable_customers=enable_customers)
+    
+    # Sanity-check that the Q-table's state dimension matches the environment's
+    # current discrete state index size. If they don't match, this usually means
+    # the environment definition changed after training and the old Q-table is
+    # no longer compatible.
+    try:
+        expected_state_dim = env.unwrapped.state_index_size
+    except AttributeError:
+        # Older versions of the env used a simple Discrete observation_space.
+        expected_state_dim = env.observation_space.n
+    
+    if q_table.shape[0] != expected_state_dim:
+        print(
+            f"\nWARNING: Q-table state dimension ({q_table.shape[0]}) does not "
+            f"match environment state index size ({expected_state_dim}).\n"
+            "This Q-table was likely trained with an older version of the "
+            "environment. Please retrain the SARSA agent before using this "
+            "demo, or switch to a run directory that matches the current env."
+        )
+        env.close()
+        return
 
     try:
         for episode in range(num_episodes):
-            state, info = env.reset()
+            obs, info = env.reset()
+            # Use the compact integer state index if provided; otherwise fall
+            # back to the raw observation for older env versions.
+            state = info.get("state_index", obs)
+            state = int(state)
             done = False
             total_reward = 0.0
             steps = 0
@@ -93,7 +118,9 @@ def run_trained_agent(run_dir: str, num_episodes: int = 5, sleep: float = 0.1):
             while not done and steps < max_steps:
                 # Greedy action from Q-table
                 action = int(np.argmax(q_table[state]))
-                next_state, reward, terminated, truncated, info = env.step(action)
+                next_obs, reward, terminated, truncated, info = env.step(action)
+                next_state = info.get("state_index", next_obs)
+                next_state = int(next_state)
 
                 total_reward += reward
                 steps += 1
@@ -101,7 +128,7 @@ def run_trained_agent(run_dir: str, num_episodes: int = 5, sleep: float = 0.1):
 
                 # Render is automatic in this env when render_mode='human'
                 time.sleep(sleep)
-
+                
                 state = next_state
 
             print(f"  Steps: {steps}, Total reward: {total_reward:.2f}")

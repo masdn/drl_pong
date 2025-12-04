@@ -38,8 +38,10 @@ class SARSAAgentTabular:
             enable_customers=enable_customers,
         )
         
-        # Get state and action dimensions
-        self.state_dim = self.env.observation_space.n
+        # Get state and action dimensions. The environment now exposes a Dict
+        # observation, but also provides a compact integer state index via
+        # env.unwrapped.state_index_size and info["state_index"].
+        self.state_dim = self.env.unwrapped.state_index_size
         self.action_dim = self.env.action_space.n
         
         # Initialize Q-table
@@ -94,6 +96,8 @@ class SARSAAgentTabular:
         td_error = target - current_q
         self.q_table[state, action] += self.learning_rate * td_error
         
+        # We no longer log TD errors each episode; return is kept for potential
+        # diagnostics but is unused by the training loop.
         return abs(td_error)
     
     def train(self, num_episodes, max_steps):
@@ -106,18 +110,20 @@ class SARSAAgentTabular:
             env = self.render_env if (episode + 1) % self.display_episodes == 0 else self.env
             
             # Reset environment
-            state, info = env.reset()
+            obs, info = env.reset()
+            # Use the compact integer state index provided by the environment.
+            state = info.get("state_index")
             
             # Select initial action
             action = self.select_action(state)
             
             episode_total_reward = 0
-            episode_td_errors = []
             
             # Run episode
             for step in range(max_steps):
                 # Take action
-                next_state, reward, done, truncated, info = env.step(action)
+                next_obs, reward, done, truncated, info = env.step(action)
+                next_state = info.get("state_index")
                 
                 # Select next action
                 next_action = self.select_action(next_state)
@@ -125,8 +131,7 @@ class SARSAAgentTabular:
                 episode_total_reward += reward
                 
                 # SARSA update
-                td_error = self.update(state, action, reward, next_state, next_action, done or truncated)
-                episode_td_errors.append(td_error)
+                self.update(state, action, reward, next_state, next_action, done or truncated)
                 
                 # Move to next state and action
                 state = next_state
@@ -138,7 +143,9 @@ class SARSAAgentTabular:
                 
                 # Check if episode ended
                 if done or truncated:
-                    if reward == 1000:  # Successful placement
+                    # Count episode as success when all items have been stocked.
+                    # The environment exposes this via info["all_items_stocked"].
+                    if info.get("all_items_stocked"):
                         success_count += 1
                     break
             
@@ -150,15 +157,16 @@ class SARSAAgentTabular:
             
             # Print progress
             avg_reward = np.mean(all_episode_rewards[-50:])
-            avg_td_error = np.mean(episode_td_errors) if episode_td_errors else 0.0
             success_rate = success_count / (episode + 1) * 100
             
-            print(f"Episode {episode+1}/{num_episodes} | "
-                  f"Reward: {episode_total_reward:.2f} | "
-                  f"Avg (50): {avg_reward:.2f} | "
-                  f"TD Error: {avg_td_error:.4f} | "
-                  f"ε: {self.epsilon:.4f} | "
-                  f"Success Rate: {success_rate:.1f}%", flush=True)
+            print(
+                f"Episode {episode+1}/{num_episodes} | "
+                f"Reward: {episode_total_reward:.2f} | "
+                f"Avg (50): {avg_reward:.2f} | "
+                f"ε: {self.epsilon:.4f} | "
+                f"Success Rate: {success_rate:.1f}%",
+                flush=True,
+            )
         
         return all_episode_rewards, success_count
 
@@ -250,24 +258,29 @@ if __name__ == "__main__":
         print(f"Min Reward: {min_reward:.2f}")
         print(f"Success Rate: {success_rate:.2f}%")
         
-        # Store results
+        # Store results (for final multi-config summary)
         all_run_results.append({
-            'config_name': config_name,
-            'average_reward': average_reward,
-            'std_reward': std_reward,
-            'max_reward': max_reward,
-            'min_reward': min_reward,
-            'success_rate': success_rate,
-            'elapsed_time': elapsed_time
+            "config_name": config_name,
+            "average_reward": average_reward,
+            "std_reward": std_reward,
+            "max_reward": max_reward,
+            "min_reward": min_reward,
+            "success_rate": success_rate,
+            "elapsed_time": elapsed_time,
         })
         
         # Create results directory
         results_base_dir = os.path.join(script_dir, "results", "retail_store", config_name)
         os.makedirs(results_base_dir, exist_ok=True)
         
-        # Create folder with timestamp
+        # Create folder with timestamp and allow user to customize the name.
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        folder_name = f"sarsa_avg_{average_reward:.2f}_success_{success_rate:.1f}_{timestamp}"
+        default_folder_name = f"sarsa_avg_{average_reward:.2f}_success_{success_rate:.1f}_{timestamp}"
+        user_folder_name = input(
+            f'What do you want to name the folder that is going in results? '
+            f'(press Enter for default "{default_folder_name}"): '
+        ).strip()
+        folder_name = user_folder_name or default_folder_name
         results_dir = os.path.join(results_base_dir, folder_name)
         os.makedirs(results_dir, exist_ok=True)
         
