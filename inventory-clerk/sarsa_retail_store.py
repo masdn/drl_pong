@@ -7,6 +7,7 @@ function Q(s, a), and runs on GPU (CUDA) when available.
 
 import os
 import json
+import random
 import numpy as np
 import matplotlib.pyplot as plt
 import shutil
@@ -17,6 +18,7 @@ import gymnasium as gym
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 import retail_store_env  # Register the environment
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -86,7 +88,7 @@ class SARSAAgentTabular:
         self.action_dim = self.env.action_space.n
 
         # Q-network and optimizer
-        hidden_size = config.get("hidden_size", 128)
+        hidden_size = config.get("hidden_size", 64)
         self.q_network = QNetwork(self.state_dim, self.action_dim, hidden_size).to(
             self.device
         )
@@ -102,6 +104,11 @@ class SARSAAgentTabular:
         self.decay_rate = config["decay_rate"]
         self.use_boltzmann = config.get("use_boltzmann", False)
         self.display_episodes = config.get("display_episodes", 2001)
+        # Replay / update schedule
+        self.batch_size = config.get("batch_size", 32)
+        self.update_every = config.get("update_every", 4)
+        self.buffer_size = config.get("buffer_size", 10000)
+        self.replay_buffer = []
         
         print(f"State space size: {self.state_dim}")
         print(f"Action space size: {self.action_dim}")
@@ -130,39 +137,63 @@ class SARSAAgentTabular:
         
         return action
     
-    def update(self, state, action, reward, next_state, next_action, done):
+    def update(self, state, action, reward, next_state, next_action, done, step_index):
         """
-        SARSA update with function approximation:
-        Q(s,a;θ) <- Q(s,a;θ) + α * [r + γ Q(s',a';θ) - Q(s,a;θ)]
+        Store a SARSA transition and, every `update_every` steps, perform a
+        minibatch gradient update on the Q-network using experience replay.
+
+        This reduces the number of backward passes (for speed) while still
+        keeping the update rule close to on-policy SARSA.
         """
-        state_t = torch.tensor([state], device=self.device, dtype=torch.long)
-        next_state_t = torch.tensor([next_state], device=self.device, dtype=torch.long)
-        reward_t = torch.tensor(reward, dtype=torch.float32, device=self.device)
-        
+        # Append transition to replay buffer
+        self.replay_buffer.append(
+            (state, action, reward, next_state, next_action, done)
+        )
+        # Keep buffer size bounded
+        if len(self.replay_buffer) > self.buffer_size:
+            self.replay_buffer.pop(0)
+
+        # Only update every `update_every` environment steps once we have enough data
+        if len(self.replay_buffer) < self.batch_size:
+            return 0.0
+        if step_index % self.update_every != 0:
+            return 0.0
+
+        batch = random.sample(self.replay_buffer, self.batch_size)
+        states, actions, rewards, next_states, next_actions, dones = zip(*batch)
+
+        states_t = torch.tensor(states, device=self.device, dtype=torch.long)
+        actions_t = torch.tensor(actions, device=self.device, dtype=torch.long)
+        rewards_t = torch.tensor(rewards, device=self.device, dtype=torch.float32)
+        next_states_t = torch.tensor(next_states, device=self.device, dtype=torch.long)
+        next_actions_t = torch.tensor(next_actions, device=self.device, dtype=torch.long)
+        dones_t = torch.tensor(dones, device=self.device, dtype=torch.bool)
+
         # Current Q(s,a)
-        q_values = self.q_network(state_t)  # [1, action_dim]
-        q_sa = q_values[0, action]
-        
-        # Target r + gamma * Q(s',a')
+        q_values = self.q_network(states_t)  # [B, action_dim]
+        q_sa = q_values.gather(1, actions_t.unsqueeze(1)).squeeze(1)
+
         with torch.no_grad():
-            next_q_values = self.q_network(next_state_t)  # [1, action_dim]
-            next_q_sap = next_q_values[0, next_action]
-            target = reward_t if done else reward_t + self.gamma * next_q_sap
-        
-        loss = (q_sa - target).pow(2)
-        
+            next_q_values = self.q_network(next_states_t)  # [B, action_dim]
+            next_q_sap = next_q_values.gather(1, next_actions_t.unsqueeze(1)).squeeze(1)
+            targets = rewards_t + self.gamma * next_q_sap * (~dones_t).float()
+
+        loss = F.mse_loss(q_sa, targets)
+
         self.optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=1.0)
         self.optimizer.step()
-        
+
         return float(loss.item())
     
     def train(self, num_episodes, max_steps):
         """Train the agent using SARSA algorithm."""
         all_episode_rewards = []
         success_count = 0
-        
+        start_time = time.time()
+        print_every = 10
+
         for episode in range(num_episodes):
             # Use render environment for display episodes
             env = self.render_env if (episode + 1) % self.display_episodes == 0 else self.env
@@ -188,8 +219,16 @@ class SARSAAgentTabular:
                 
                 episode_total_reward += reward
                 
-                # SARSA update
-                self.update(state, action, reward, next_state, next_action, done or truncated)
+                # SARSA update (with replay and periodic minibatch updates)
+                self.update(
+                    state,
+                    action,
+                    reward,
+                    next_state,
+                    next_action,
+                    done or truncated,
+                    step,
+                )
                 
                 # Move to next state and action
                 state = next_state
@@ -213,18 +252,26 @@ class SARSAAgentTabular:
             # Store episode reward
             all_episode_rewards.append(episode_total_reward)
             
-            # Print progress
-            avg_reward = np.mean(all_episode_rewards[-50:])
-            success_rate = success_count / (episode + 1) * 100
-            
-            print(
-                f"Episode {episode+1}/{num_episodes} | "
-                f"Reward: {episode_total_reward:.2f} | "
-                f"Avg (50): {avg_reward:.2f} | "
-                f"ε: {self.epsilon:.4f} | "
-                f"Success Rate: {success_rate:.1f}%",
-                flush=True,
-            )
+            # Print progress every `print_every` episodes
+            if (episode + 1) % print_every == 0 or episode == 0 or (episode + 1) == num_episodes:
+                avg_reward = np.mean(all_episode_rewards[-50:])
+                success_rate = success_count / (episode + 1) * 100
+
+                elapsed = time.time() - start_time
+                completed = episode + 1
+                remaining = max(num_episodes - completed, 0)
+                eta_seconds = (elapsed / completed) * remaining if completed > 0 else 0.0
+                eta_minutes = eta_seconds / 60.0
+
+                print(
+                    f"Episode {episode+1}/{num_episodes} | "
+                    f"Reward: {episode_total_reward:.2f} | "
+                    f"Avg (50): {avg_reward:.2f} | "
+                    f"ε: {self.epsilon:.4f} | "
+                    f"Success Rate: {success_rate:.1f}% | "
+                    f"ETA: {eta_minutes:.2f} min",
+                    flush=True,
+                )
         
         return all_episode_rewards, success_count
 

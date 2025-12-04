@@ -213,7 +213,7 @@ class RetailStoreEnv(gym.Env):
         self.has_item = False
         self.steps = 0
         self.episode_reward = 0.0
-        self.max_steps = 400
+        self.max_steps = 350
         # Track items that have been dropped on the floor: (row, col, item_id)
         self.dropped_items = []
         # Stocking cart position and whether the agent is currently pushing it
