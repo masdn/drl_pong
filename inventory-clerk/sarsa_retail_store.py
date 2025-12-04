@@ -1,6 +1,8 @@
 """
-SARSA training for Retail Store Clerk environment.
-Uses tabular Q-learning approach since the state space is discrete.
+Neural SARSA (deep SARSA) training for the Retail Store Clerk environment.
+
+This version uses a PyTorch neural network to approximate the action-value
+function Q(s, a), and runs on GPU (CUDA) when available.
 """
 
 import os
@@ -12,15 +14,51 @@ from datetime import datetime
 import time
 import glob
 import gymnasium as gym
+import torch
+import torch.nn as nn
+import torch.optim as optim
 import retail_store_env  # Register the environment
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 
+class QNetwork(nn.Module):
+    """
+    Simple feedforward Q-network for discrete state indices and actions.
+    We embed the integer state index into a learned vector and pass it
+    through a small MLP to produce Q-values for each action.
+    """
+
+    def __init__(self, state_dim: int, action_dim: int, hidden_size: int = 128):
+        super().__init__()
+        self.embedding = nn.Embedding(state_dim, hidden_size)
+        self.fc1 = nn.Linear(hidden_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, action_dim)
+
+        # Optional: initialize weights for stability
+        nn.init.xavier_uniform_(self.fc1.weight)
+        nn.init.zeros_(self.fc1.bias)
+        nn.init.xavier_uniform_(self.fc2.weight)
+        nn.init.zeros_(self.fc2.bias)
+
+    def forward(self, states: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            states: tensor of shape [batch] with integer state indices.
+        Returns:
+            q_values: tensor of shape [batch, action_dim]
+        """
+        x = self.embedding(states.long())
+        x = torch.relu(self.fc1(x))
+        q_values = self.fc2(x)
+        return q_values
+
+
 class SARSAAgentTabular:
     """
-    Tabular SARSA agent for discrete state and action spaces.
-    Uses a Q-table instead of neural network approximation.
+    Neural SARSA agent for discrete state and action spaces.
+    Uses a PyTorch Q-network instead of a tabular Q-table, and can
+    train on GPU when available.
     """
     
     def __init__(self, config):
@@ -38,14 +76,23 @@ class SARSAAgentTabular:
             enable_customers=enable_customers,
         )
         
+        # Select device: use GPU (cuda) if available, otherwise CPU.
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
         # Get state and action dimensions. The environment now exposes a Dict
         # observation, but also provides a compact integer state index via
         # env.unwrapped.state_index_size and info["state_index"].
         self.state_dim = self.env.unwrapped.state_index_size
         self.action_dim = self.env.action_space.n
-        
-        # Initialize Q-table
-        self.q_table = np.zeros((self.state_dim, self.action_dim))
+
+        # Q-network and optimizer
+        hidden_size = config.get("hidden_size", 128)
+        self.q_network = QNetwork(self.state_dim, self.action_dim, hidden_size).to(
+            self.device
+        )
+        self.optimizer = optim.Adam(
+            self.q_network.parameters(), lr=config["learning_rate"]
+        )
         
         # Hyperparameters
         self.gamma = config["gamma"]
@@ -59,46 +106,57 @@ class SARSAAgentTabular:
         print(f"State space size: {self.state_dim}")
         print(f"Action space size: {self.action_dim}")
         print(f"Using {'Boltzmann' if self.use_boltzmann else 'Epsilon-greedy'} exploration")
+        print(f"Using device: {self.device}")
     
     def select_action(self, state):
         """Select action using epsilon-greedy or Boltzmann exploration."""
-        q_values = self.q_table[state]
+        state_t = torch.tensor([state], device=self.device, dtype=torch.long)
+        with torch.no_grad():
+            q_values = self.q_network(state_t).squeeze(0)  # [action_dim]
         
         if self.use_boltzmann:
-            # Boltzmann exploration
+            # Boltzmann exploration using torch operations.
             temperature = max(self.epsilon, 0.1)
-            q_shifted = q_values - np.max(q_values)
-            exp_q = np.exp(q_shifted / temperature)
-            probs = exp_q / np.sum(exp_q)
-            action = np.random.choice(self.action_dim, p=probs)
+            q_shifted = q_values - torch.max(q_values)
+            exp_q = torch.exp(q_shifted / temperature)
+            probs = exp_q / torch.sum(exp_q)
+            action = torch.multinomial(probs, 1).item()
         else:
             # Epsilon-greedy exploration
             if np.random.rand() < self.epsilon:
                 action = np.random.randint(self.action_dim)
             else:
-                action = np.argmax(q_values)
+                action = torch.argmax(q_values).item()
         
         return action
     
     def update(self, state, action, reward, next_state, next_action, done):
         """
-        SARSA update: Q(s,a) <- Q(s,a) + alpha * [r + gamma * Q(s',a') - Q(s,a)]
+        SARSA update with function approximation:
+        Q(s,a;θ) <- Q(s,a;θ) + α * [r + γ Q(s',a';θ) - Q(s,a;θ)]
         """
-        current_q = self.q_table[state, action]
+        state_t = torch.tensor([state], device=self.device, dtype=torch.long)
+        next_state_t = torch.tensor([next_state], device=self.device, dtype=torch.long)
+        reward_t = torch.tensor(reward, dtype=torch.float32, device=self.device)
         
-        if done:
-            target = reward
-        else:
-            next_q = self.q_table[next_state, next_action]
-            target = reward + self.gamma * next_q
+        # Current Q(s,a)
+        q_values = self.q_network(state_t)  # [1, action_dim]
+        q_sa = q_values[0, action]
         
-        # Update Q-value
-        td_error = target - current_q
-        self.q_table[state, action] += self.learning_rate * td_error
+        # Target r + gamma * Q(s',a')
+        with torch.no_grad():
+            next_q_values = self.q_network(next_state_t)  # [1, action_dim]
+            next_q_sap = next_q_values[0, next_action]
+            target = reward_t if done else reward_t + self.gamma * next_q_sap
         
-        # We no longer log TD errors each episode; return is kept for potential
-        # diagnostics but is unused by the training loop.
-        return abs(td_error)
+        loss = (q_sa - target).pow(2)
+        
+        self.optimizer.zero_grad()
+        loss.backward()
+        nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=1.0)
+        self.optimizer.step()
+        
+        return float(loss.item())
     
     def train(self, num_episodes, max_steps):
         """Train the agent using SARSA algorithm."""
@@ -294,10 +352,21 @@ if __name__ == "__main__":
         rewards_file = os.path.join(results_dir, "episode_rewards.txt")
         np.savetxt(rewards_file, episode_rewards, fmt='%.6f')
         
-        # Save Q-table
+        # Save a snapshot of the Q-function for analysis / demo:
+        # evaluate the network on all discrete states and store the resulting
+        # Q-table as a NumPy array, and also save the network weights.
         qtable_file = os.path.join(results_dir, "q_table.npy")
-        np.save(qtable_file, agent.q_table)
-        print(f"Q-table saved to: {qtable_file}")
+        with torch.no_grad():
+            all_states = torch.arange(
+                agent.state_dim, device=agent.device, dtype=torch.long
+            )
+            all_q = agent.q_network(all_states).cpu().numpy()
+        np.save(qtable_file, all_q)
+        print(f"Q-table snapshot saved to: {qtable_file}")
+
+        model_file = os.path.join(results_dir, "q_network.pt")
+        torch.save(agent.q_network.state_dict(), model_file)
+        print(f"Q-network weights saved to: {model_file}")
         
         # Save summary
         summary_file = os.path.join(results_dir, "summary.txt")

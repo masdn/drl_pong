@@ -1,6 +1,6 @@
 {
   "env_name": "RetailStore-v0",
-  "num_episodes": 200000,
+  "num_episodes": 300000,
   "max_steps": 400,
   "gamma": 0.99,
   "learning_rate": 0.1,

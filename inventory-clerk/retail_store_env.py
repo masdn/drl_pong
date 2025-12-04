@@ -450,9 +450,9 @@ class RetailStoreEnv(gym.Env):
     def step(self, action: int):
         """Execute one step in the environment."""
         self.steps += 1
-        # Small negative reward for each step to encourage efficiency, but
-        # not so large that exploration becomes overwhelmingly bad.
-        reward = -3
+        # Small negative reward for each step to encourage efficiency, scaled
+        # so overall rewards stay in a moderate range.
+        reward = -0.3
         terminated = False
         self.last_action = action
         # Distance to cart before taking the action (for shaping when empty-handed)
@@ -481,15 +481,15 @@ class RetailStoreEnv(gym.Env):
             # Check boundaries and obstacles
             if 0 <= new_row < self.grid_size and 0 <= new_col < self.grid_size:
                 if (new_row, new_col) in self.obstacles:
-                    # Ran into a static obstacle (e.g., shelving) – stronger penalty.
-                    reward -= 10
+                    # Ran into a static obstacle (e.g., shelving).
+                    reward -= 1.0
                 else:
                     # If pushing the cart, treat item goal cells as blocked so the
                     # cart can never sit on a shelf location.
                     if self.pushing_cart and (new_row, new_col) in self.item_locations.values():
                         # Block the move and apply a small penalty for trying to
                         # push the cart onto a shelf.
-                        reward -= 10
+                        reward -= 1.0
                     else:
                         self.agent_pos = (new_row, new_col)
                         # If pushing the cart, it follows the agent
@@ -497,7 +497,7 @@ class RetailStoreEnv(gym.Env):
                             self.cart_pos = self.agent_pos
             else:
                 # Invalid attempt (off-grid); small penalty
-                reward -= 20
+                reward -= 2.0
         
         elif action == 4:
             # Action 4: Pickup from stocking cart
@@ -505,7 +505,7 @@ class RetailStoreEnv(gym.Env):
                 if self.has_item:
                     # Trying to pick up while already carrying an item:
                     # strongly discouraged.
-                    reward -= 40
+                    reward -= 4.0
                 else:
                     # Move to the next item in the fixed episode order, if any.
                     if self.item_order_idx < self.num_items - 1:
@@ -515,10 +515,10 @@ class RetailStoreEnv(gym.Env):
                         reward += 0  # Neutral for picking up
                     else:
                         # No more items to stock this episode
-                        reward -= 50
+                        reward -= 5.0
             else:
                 # Attempting to pick up when not at the cart is also wasteful.
-                reward -= 20
+                reward -= 2.0
         
         elif action == 5:
             # Action 5: Dropoff item
@@ -538,32 +538,32 @@ class RetailStoreEnv(gym.Env):
                     # Base dropoff reward based purely on agent-to-target distance.
                     if distance == 0:
                         # Perfect placement!
-                        reward = 1000
+                        reward = 100.0
                         # Mark this item type as correctly stocked for this episode.
                         if 0 <= self.current_item < self.num_items:
                             self.items_stocked[self.current_item] = True
                     elif distance <= 4:
                         # Within 4 blocks
-                        reward = 300
+                        reward = 30.0
                     elif distance <= 10:
                         # Within 10 blocks
-                        reward = 50
+                        reward = 5.0
                     else:
                         # Too far away
-                        reward = -20
+                        reward = -2.0
 
                     # Additional shaping based on how close the cart itself is to
                     # the item's true shelf location. This makes it more desirable
                     # to move the cart toward the department before dropping.
                     cart_dist = self._manhattan_distance(self.cart_pos, target_location)
-                    cart_penalty_per_step = 1.0
+                    cart_penalty_per_step = 0.1
                     reward -= cart_penalty_per_step * cart_dist
 
                     # If every item type has been perfectly stocked at least once
                     # during this episode, give an additional completion bonus
                     # and end the episode.
                     if all(self.items_stocked):
-                        completion_bonus = 2000.0
+                        completion_bonus = 200.0
                         reward += completion_bonus
                         terminated = True
 
@@ -572,7 +572,7 @@ class RetailStoreEnv(gym.Env):
                     self.has_item = False
             else:
                 # Tried to drop off but don't have an item
-                reward = -50
+                reward = -5.0
         
         elif action == 6:
             # Action 6: Start pushing the cart (must be at or adjacent to it and not already pushing)
@@ -585,29 +585,29 @@ class RetailStoreEnv(gym.Env):
                 else:
                     # Invalid attempt; softer penalty so exploration of action 6
                     # is not overly discouraged.
-                    reward -= 20
+                    reward -= 2.0
             else:
                 # Already pushing; no-op with small penalty
-                reward -= 10
+                reward -= 1.0
 
         elif action == 7:
             # Action 7: Leave the cart; it stays where it is
             if self.pushing_cart:
                 self.pushing_cart = False
-                reward -= 10
+                reward -= 1.0
             else:
                 # Already not pushing; no-op with small penalty
-                reward -= 50
+                reward -= 5.0
 
         # Distance-based shaping and penalty when moving without an item.
         # Being empty-handed is still treated as undesirable, but the per-step
         # penalty is softened so that returning to the cart is not suicidal.
         if action < 4 and not self.has_item:
             new_dist_to_cart = self._manhattan_distance(self.agent_pos, self.cart_pos)
-            alpha = 2.0  # Shaping: prefer moves that reduce distance to cart
+            alpha = 0.2  # Shaping: prefer moves that reduce distance to cart
             reward += alpha * (prev_dist_to_cart - new_dist_to_cart)
             # Moderate per-step penalty for being empty-handed
-            reward -= 10
+            reward -= 1.0
 
         # When pushing the cart, we do not provide any extra positive shaping
         # beyond what the agent would receive by walking without the cart.
@@ -640,7 +640,7 @@ class RetailStoreEnv(gym.Env):
         if min_cust_dist is not None and not self.pushing_cart: #TODO: Remove this condition for test
             if min_cust_dist <= 1:
                 # Strong (but softened) penalty for being on or right next to a customer
-                reward -= 70
+                reward -= 7.0
                 # Teleport agent back to the cart (wherever it currently is)
                 self.agent_pos = self.cart_pos
                 # No longer pushing the cart after being interrupted
@@ -651,7 +651,7 @@ class RetailStoreEnv(gym.Env):
                 # Mild penalty when within 4 blocks of any customer.
                 # This nudges the agent away from busy areas without making
                 # exploration prohibitively expensive.
-                reward -= 30
+                reward -= 3.0
 
         # Check if max steps reached
         if self.steps >= self.max_steps:
